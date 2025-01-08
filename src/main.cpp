@@ -31,15 +31,15 @@ DB_KEYS(
     wifiSSID,          // Название точки доступа для подключения
     wifiPass,          // Пароль точки доступа для подключения
     wifiSSIDAP,        // Название точки доступа для подключения
-    wifiPassAP        // Пароль точки доступа для подключения
+    wifiPassAP         // Пароль точки доступа для подключения
 );
 /// --- База данных --- ///
 
 /// --- Bluetooth конфигурация --- ///
 BluetoothSerial SerialBT;
 #define ELM_PORT SerialBT
-// const uint8_t address[6] = { 0x11, 0x33, 0x77, 0x54, 0x00, 0x34 };
-const uint8_t address[6] = {0xE8, 0x6B, 0xEA, 0xF6, 0xB9, 0x76};
+const uint8_t address[6] = {0x11, 0x33, 0x77, 0x54, 0x00, 0x34};
+// const uint8_t address[6] = {0xE8, 0x6B, 0xEA, 0xF6, 0xB9, 0x76};
 /// --- Bluetooth конфигурация --- ///
 
 /// --- ELMDuino конфигурация --- ///
@@ -60,7 +60,9 @@ obd_pid_states obd_state = ENG_RPM;
 /// --- Data --- ///
 unsigned long timeNew, timeOld, timeOldLog;
 int engTemp, intakeTemp;
-float t1, t2, speed, longTerm, shortTerm, maf, rpm, odometrCurrent, voltage, LPH, FuelFlowGramsPerSecond, FuelFlowLitersPerSecond, correctFuel, LP100, LP100z, LP100l, fuelAdd, timeD, odometr, fuelSent, odometrAdd, odometrAddLog, fuelAddLog, fuelCurrent;
+int32_t speed;
+float longTerm, shortTerm, maf, rpm, odometrCurrent, voltage, LPH, FuelFlowGramsPerSecond, FuelFlowLitersPerSecond, correctFuel, LP100, LP100z, LP100l, fuelAdd, timeD, odometr, fuelSent, odometrAdd, odometrAddLog, fuelAddLog, fuelCurrent;
+double timer;
 /// --- Data --- ///
 
 /// --- Константы для формул --- ///
@@ -123,6 +125,8 @@ void build(sets::Builder& b) {
         b.Label("lbl6"_h, "Расход воздуха");
         b.Label("lbl7"_h, "Напряжение ELM");
         b.Label("lbl8"_h, "Температура впуска");
+        b.Label("lbl9"_h, "Литры в час");
+        b.Label("lbl10"_h, "Литры на 100");
     }
     {
         sets::Group g(b, "WI-FI настройки");
@@ -149,6 +153,8 @@ void update(sets::Updater& upd) {
     upd.update("lbl6"_h, maf);
     upd.update("lbl7"_h, voltage);
     upd.update("lbl8"_h, intakeTemp);
+    upd.update("lbl9"_h, LPH);
+    upd.update("lbl10"_h, LP100);
 }
 void setup() {
     setupSerialAndDisplay();
@@ -220,22 +226,17 @@ void loop() {
     }
     ObdWork();
 }
-
 void calculateTime() {
+    float timeCorrect = db[kk::timeCorrect];
     if (timeOld == 0) {
         timeOld = millis();
     }
     timeNew = millis();
-    timeD = (float(timeNew - timeOld) / 1000.0) * timeCorrect;
 
-    // Ограничение на максимальное значение времени
-    if (timeD > 10.0) {
-        timeD = 10.0;
+    timer = (double(timeNew - timeOld) / 1000.0) * timeCorrect;
+    if (timer > 10) {
+        timer = 0;
     }
-    if (timeD < 0.0) {
-        timeD = 0.0;
-    }
-
     timeOld = timeNew;
 }
 
@@ -268,7 +269,7 @@ void ObdWork() {
 
         // Обновление одометра
         if (speed > 0) {
-            odometrAdd = (speed / 3600.0) * timeD;
+            odometrAdd = (speed * 1000.0 / 3600.0) * timer / 1000.0;
             odometr += odometrAdd;
             odometrCurrent += odometrAdd;
         } else {
@@ -276,7 +277,7 @@ void ObdWork() {
         }
 
         // Обновление потраченного топлива
-        fuelAdd = FuelFlowLitersPerSecond * timeD;
+        fuelAdd = FuelFlowLitersPerSecond * timer;
         fuelSent += fuelAdd;
         fuelCurrent += fuelAdd;
 
@@ -314,8 +315,8 @@ void getOBDParams() {
 
             if (myELM327.nb_rx_state == ELM_SUCCESS) {
                 rpm = tempRpm;
-                Serial.print("rpm: ");
-                Serial.println(rpm);
+                // Serial.print("rpm: ");
+                // Serial.println(rpm);
                 obd_state = SPEED;
             } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
                 myELM327.printError();
@@ -326,12 +327,12 @@ void getOBDParams() {
         }
 
         case SPEED: {
-            float tempSpeed = myELM327.mph();
+            float tempSpeed = myELM327.kph();
 
             if (myELM327.nb_rx_state == ELM_SUCCESS) {
                 speed = tempSpeed;
-                Serial.print("speed: ");
-                Serial.println(speed);
+                // Serial.print("speed: ");
+                // Serial.println(speed);
                 obd_state = ENG_TEMP;
             } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
                 myELM327.printError();
@@ -346,11 +347,10 @@ void getOBDParams() {
 
             if (myELM327.nb_rx_state == ELM_SUCCESS) {
                 engTemp = tempEngTemp;
-                Serial.print("engTemp: ");
-                Serial.println(engTemp);
                 obd_state = VOLT;
             } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
                 myELM327.printError();
+
                 obd_state = VOLT;
             }
 
@@ -362,8 +362,9 @@ void getOBDParams() {
 
             if (myELM327.nb_rx_state == ELM_SUCCESS) {
                 voltage = tempVoltage;
-                Serial.print("voltage: ");
-                Serial.println(voltage);
+                // Serial.print("voltage: ");
+                // Serial.println(voltage);
+
                 obd_state = LONG;
             } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
                 myELM327.printError();
@@ -378,11 +379,13 @@ void getOBDParams() {
 
             if (myELM327.nb_rx_state == ELM_SUCCESS) {
                 longTerm = tempLongTerm;
-                Serial.print("longTerm: ");
-                Serial.println(longTerm);
+                //  Serial.print("longTerm: ");
+                //  Serial.println(longTerm);
+
                 obd_state = INTAKE_TEMP;
             } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
                 myELM327.printError();
+
                 obd_state = INTAKE_TEMP;
             }
 
@@ -394,8 +397,9 @@ void getOBDParams() {
 
             if (myELM327.nb_rx_state == ELM_SUCCESS) {
                 intakeTemp = tempIntakeTemp;
-                Serial.print("intakeTemp: ");
-                Serial.println(intakeTemp);
+                // Serial.print("intakeTemp: ");
+                // Serial.println(intakeTemp);
+
                 obd_state = SHORT;
             } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
                 myELM327.printError();
@@ -410,8 +414,8 @@ void getOBDParams() {
 
             if (myELM327.nb_rx_state == ELM_SUCCESS) {
                 shortTerm = tempShortTerm;
-                Serial.print("shortTerm: ");
-                Serial.println(shortTerm);
+                // Serial.print("shortTerm: ");
+                // Serial.println(shortTerm);
                 obd_state = MAF;
             } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
                 myELM327.printError();
@@ -426,8 +430,8 @@ void getOBDParams() {
 
             if (myELM327.nb_rx_state == ELM_SUCCESS) {
                 maf = tempMaf;
-                Serial.print("maf: ");
-                Serial.println(maf);
+                // Serial.print("maf: ");
+                // Serial.println(maf);
                 obd_state = ENG_RPM;
             } else if (myELM327.nb_rx_state != ELM_GETTING_MSG) {
                 myELM327.printError();
