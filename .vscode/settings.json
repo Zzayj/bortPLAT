@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "*.tpl": "html",
+        "*.master": "html",
+        "string": "cpp",
+        "string_view": "cpp"
+    }
+}

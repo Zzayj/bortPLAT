@@ -5,14 +5,13 @@
 #include <WiFi.h>
 #include <Wire.h>
 
-
 /// --- Веб часть  --- ///
 #define WIFI_SSID "Kit"
 #define WIFI_PASS "QazXswCde"
 
 #include <GyverDBFile.h>
 #include <LittleFS.h>
-GyverDBFile db(&LittleFS, "/dt.db");
+GyverDBFile db(&LittleFS, "/db.db");
 
 #include <SettingsGyver.h>
 SettingsGyver sett("БК", &db);
@@ -28,30 +27,19 @@ DB_KEYS(
     last100lper100km,  // Чтоб посчитать расход на 100, так же обнуляется
     timeCorrect,       // Корректировка коэффициента времени arduino uno, у каждого свой.
     fuelRatio,         // Коэффициент коррекции топлива
-    btPin,             // Коэффициент коррекции топлива
     wifiMode,          //  Режим Wi-fi Точка доступа/Подключение к точке доступа
     wifiSSID,          // Название точки доступа для подключения
     wifiPass,          // Пароль точки доступа для подключения
     wifiSSIDAP,        // Название точки доступа для подключения
-    wifiPassAP,         // Пароль точки доступа для подключения
-    btAdress
+    wifiPassAP        // Пароль точки доступа для подключения
 );
 /// --- База данных --- ///
 
 /// --- Bluetooth конфигурация --- ///
 BluetoothSerial SerialBT;
 #define ELM_PORT SerialBT
-#define DEBUG_PORT Serial
-
-bool isConnected = false;
-bool isSearch = false;
-bool isErrorConnect;
-bool isErrorConnectAlreadyConnected;
-
-#define BT_DISCOVER_TIME 10000        // Время поиска устройств
-BTScanResults* pResults;
-String devices;
-uint8_t selId;
+// const uint8_t address[6] = { 0x11, 0x33, 0x77, 0x54, 0x00, 0x34 };
+const uint8_t address[6] = {0xE8, 0x6B, 0xEA, 0xF6, 0xB9, 0x76};
 /// --- Bluetooth конфигурация --- ///
 
 /// --- ELMDuino конфигурация --- ///
@@ -100,9 +88,8 @@ int pressCount = 1;  // Счетчик нажатий
 void setupSerialAndDisplay();
 void setupButton();
 
-void connectToELM327(BTAddress adrr);
+void connectToELM327();
 void printStartInfo();
-void findBTDevices();
 void displayIP();
 void ObdWork();
 void showMessageByPressCount();
@@ -138,49 +125,6 @@ void build(sets::Builder& b) {
         b.Label("lbl8"_h, "Температура впуска");
     }
     {
-        sets::Group g(b, "Bluetooth настройки");
-        b.Select("sel1"_h, "OBDII Адаптер", devices, &selId);
-
-        if (b.Button("Найти устройства")) {
-            if (isConnected) {
-                isErrorConnectAlreadyConnected = true;
-                return;
-            } else {
-                findBTDevices();
-            }
-        }
-        if (b.Button("Отключиться")) {
-            isConnected = false;
-            db[kk::btAdress] = nullptr;
-            db.update();
-            ELM_PORT.disconnect();
-        }
-
-        if (b.Button("Подключиться")) {
-            if (isConnected) {
-                isErrorConnectAlreadyConnected = true;
-            }
-            if (pResults != nullptr) {           // Проверка на существование объекта pResults
-                if (pResults->getCount() > 0) {  // Исправлено условие, чтобы оно корректно проверяло наличие устройств
-                    BTAdvertisedDevice* dev = pResults->getDevice(selId);
-                    if (dev != nullptr) {  // Дополнительная проверка на валидность устройства
-                        db[kk::btAdress] = dev->getAddress();
-                        connectToELM327(dev->getAddress());
-                    } else {
-                        isErrorConnect = true;
-                        Serial.println("Error: Invalid device selected.");
-                    }
-                } else {
-                    isErrorConnect = true;
-                    Serial.println("Error: No devices found.");
-                }
-            } else {
-                isErrorConnect = true;
-                Serial.println("Error: pResults is null.");
-            }
-        }
-    }
-    {
         sets::Group g(b, "WI-FI настройки");
         if (b.Switch(kk::wifiMode, "Режим Точка доступа/Подключение к сети")) b.reload();
         if (db[kk::wifiMode]) {
@@ -205,20 +149,6 @@ void update(sets::Updater& upd) {
     upd.update("lbl6"_h, maf);
     upd.update("lbl7"_h, voltage);
     upd.update("lbl8"_h, intakeTemp);
-    if (isSearch) {
-        upd.update("sel1"_h, devices);
-    }
-    if (isErrorConnect) {
-        isErrorConnect = false;
-        upd.alert("Ошибка, сначала нужно выполнить поиск");
-    }
-    if (isSearch) {
-        upd.notice("Идет поиск устройств");
-    }
-    if (isErrorConnectAlreadyConnected) {
-        isErrorConnectAlreadyConnected = false;
-        upd.alert("Устройство уже подключено!");
-    }
 }
 void setup() {
     setupSerialAndDisplay();
@@ -232,13 +162,11 @@ void setup() {
     db.init(kk::last100lper100km, 0);
     db.init(kk::timeCorrect, 1);
     db.init(kk::fuelRatio, 1);
-    db.init(kk::btPin, "1234");
     db.init(kk::wifiMode, false);
     db.init(kk::wifiSSID, "");
     db.init(kk::wifiPass, "");
     db.init(kk::wifiSSIDAP, "BK");
     db.init(kk::wifiPassAP, "12345678");
-    db.init(kk::btAdress, nullptr);
     // ======== DATABASE ========
 
     // ======== WIFI ========
@@ -274,29 +202,23 @@ void setup() {
     setupButton();
     ELM_PORT.begin("Bort", true);
     ELM_PORT.setPin("1234");
-    String adrr = db[kk::btAdress];
-    if(adrr.length()) {
-        connectToELM327(adrr);
-    }
+
+    connectToELM327();
 }
 
 void loop() {
     sett.tick();
-    if (isConnected) {
-        btn.tick();
-        if (btn.holding()) {  // если кнопка удерживается
-            displayIP();      // выводим пока удерживается
-        } else {
-            showMessageByPressCount();
-        }
-        if (btn.click()) {
-            pressCount++;
-            if (pressCount > 7) pressCount = 1;
-        }
-        ObdWork();
+    btn.tick();
+    if (btn.holding()) {  // если кнопка удерживается
+        displayIP();      // выводим пока удерживается
     } else {
-        printStartInfo();
+        showMessageByPressCount();
     }
+    if (btn.click()) {
+        pressCount++;
+        if (pressCount > 7) pressCount = 1;
+    }
+    ObdWork();
 }
 
 void calculateTime() {
@@ -533,14 +455,14 @@ void setupSerialAndDisplay() {
     u8g2.sendBuffer();
 }
 
-void connectToELM327(BTAddress adrr) {
+void connectToELM327() {
     Serial.println("Connecting to ELM...");
     u8g2.clearBuffer();
     u8g2.drawStr(30, 26, "Connect");
     u8g2.drawStr(30, 37, "to ELM");
     u8g2.sendBuffer();
 
-    if (!ELM_PORT.connect(adrr)) {
+    if (!ELM_PORT.connect((uint8_t*)address)) {
         Serial.println("Couldn't connect to OBD scanner - Phase 1");
         u8g2.clearBuffer();
         u8g2.drawStr(30, 28, "Fail to");
@@ -555,8 +477,6 @@ void connectToELM327(BTAddress adrr) {
         u8g2.drawStr(30, 36, "connect ECU");
         u8g2.sendBuffer();
         while (1);
-    } else {
-        isConnected = true;
     }
 }
 
@@ -641,7 +561,7 @@ void displayIP() {
         u8g2.print(WiFi.localIP());
 
     } else {
-        u8g2.print(WiFi.softAPIP());
+        printStartInfo();
     }
     u8g2.sendBuffer();
 }
@@ -680,31 +600,7 @@ void updateDB() {
 
     db[kk::fuel100DB] = fdb100New;
 }
-void findBTDevices() {
-    Serial.println("Starting synchronous discovery... ");
-    if (!isSearch) {
-        isSearch = true;
-        devices = "";
-        pResults = SerialBT.discover(BT_DISCOVER_TIME);
-        if (pResults) {
-            for (int i = 0; i < pResults->getCount(); i++) {
-                BTAdvertisedDevice* pDevice = pResults->getDevice(i);
-                String name = pDevice->getName().c_str();               // Получаем имя устройства
-                String mac = pDevice->getAddress().toString().c_str();  // Получаем MAC-адрес
 
-                if (name == "") name = "Unknown";  // Если имя пустое, подставим "Unknown"
-                devices += name + " " + mac;
-                if (i < pResults->getCount() - 1) devices += "; ";  // Добавляем разделитель, кроме последнего элемента
-            }
-
-            Serial.println("Devices found:");
-            Serial.println(devices);
-        } else {
-            Serial.println("Error on BT Scan, no result!");
-        }
-        isSearch = false;
-    }
-}
 void resetOdometerFuel() {
     // Подсчет нового значения расхода за последние 100км
     float fdb100 = db[kk::fuel100DB];
