@@ -4,6 +4,8 @@
 #include <U8g2lib.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
 /// --- Веб часть  --- ///
 #define WIFI_SSID "Kit"
@@ -16,6 +18,14 @@ GyverDBFile db(&LittleFS, "/db.db");
 #include <SettingsGyver.h>
 SettingsGyver sett("БК", &db);
 /// --- Веб часть  --- ///
+
+/// --- Датчик температуры  --- ///
+#define ONE_WIRE_BUS 4 
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+unsigned long lastRequestTime = 0;  // Время последнего запроса
+const unsigned long requestInterval = 5000;  // Интервал 5 секунд
+/// --- Датчик температуры  --- ///
 
 /// --- База данных --- ///
 DB_KEYS(
@@ -59,10 +69,11 @@ obd_pid_states obd_state = ENG_RPM;
 
 /// --- Data --- ///
 unsigned long timeNew, timeOld, timeOldLog;
-int engTemp, intakeTemp;
+int engTemp, intakeTemp, rpm;
 int32_t speed;
-float longTerm, shortTerm, maf, rpm, odometrCurrent, voltage, LPH, FuelFlowGramsPerSecond, FuelFlowLitersPerSecond, correctFuel, LP100, LP100z, LP100l, fuelAdd, timeD, odometr, fuelSent, odometrAdd, odometrAddLog, fuelAddLog, fuelCurrent;
-double timer;
+float outsideTemp;
+float   odometrCurrent, voltage, LPH,  LP100, LP100z, LP100l, fuelAdd, odometr, fuelSent, odometrAdd, odometrAddLog, fuelAddLog, fuelCurrent;
+double timer, longTerm, shortTerm, maf, FuelFlowGramsPerSecond, FuelFlowLitersPerSecond, correctFuel;
 /// --- Data --- ///
 
 /// --- Константы для формул --- ///
@@ -210,6 +221,8 @@ void setup() {
     ELM_PORT.setPin("1234");
 
     connectToELM327();
+    
+    sensors.begin();
 }
 
 void loop() {
@@ -225,6 +238,18 @@ void loop() {
         if (pressCount > 7) pressCount = 1;
     }
     ObdWork();
+
+    unsigned long outsideReqTime = millis();
+    if (outsideReqTime - lastRequestTime >= requestInterval) {
+    lastRequestTime = outsideReqTime;  // Обновляем время последнего запроса
+    
+    sensors.requestTemperatures();  // Запрос температуры с датчика
+    outsideTemp = sensors.getTempCByIndex(0);  // Чтение температуры в градусах Цельсия
+    Serial.print("Температура: ");
+    Serial.print(outsideTemp);
+    Serial.println(" °C");
+  }
+
 }
 void calculateTime() {
     float timeCorrect = db[kk::timeCorrect];
@@ -531,7 +556,7 @@ void showMessageByPressCount() {
         {"За поездку:", "Проехал:", String(odometrCurrent), "Топливо:", String(fuelSent)},
         {"Литры на 100:", "В общем:", String(LP100z), "Последние:", db[kk::fuelDB]},
         {"За всё время:", "Проехал:", db[kk::odometrDB], "Топливо:", db[kk::odometrDB]},
-        {"Прочее", "Скорость:", String(speed), "Т. впуск:", String(intakeTemp)}};
+        {"Прочее", "Т. снаружи:", String(outsideTemp), "Т. впуск:", String(intakeTemp)}};
 
     int index = pressCount - 2;  // Сдвиг на 2, так как pressCount=1 — это displayTempVoltage
     if (index >= 0 && index < (sizeof(messages) / sizeof(messages[0]))) {
