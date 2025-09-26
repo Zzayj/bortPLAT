@@ -269,7 +269,7 @@ void ObdWork() {
     getOBDParams();  // Получение параметров OBD
     float fd = db[kk::fuelDB];
     float od = db[kk::odometrDB];
-    LP100z = (db[kk::odometrDB] > 0) ? (fd / od) : 0;
+    LP100z = (db[kk::odometrDB] > 0) ? ((fd / od) * 100.0f) : 0;
 
     if (rpm > engineOnRpm) {
         // Проверка значений для корректного расчета
@@ -278,11 +278,14 @@ void ObdWork() {
             correctFuel = ((100.0 + (longTerm + shortTerm)) / 100.0) * fR;
 
             // Сглаживание MAF (массового расхода воздуха)
-            static float mafSmoothed = 0;
+            static double mafSmoothed = 0;
             mafSmoothed = (mafSmoothed * 0.9) + (maf * 0.1);
 
             FuelFlowGramsPerSecond = (mafSmoothed / AirFuelRatio) * correctFuel;
-            FuelFlowLitersPerSecond = FuelFlowGramsPerSecond / FuelDensityGramsPerLiter;
+            static double fuelFlowSmoothed = 0;
+            fuelFlowSmoothed = (fuelFlowSmoothed * 0.8) + (FuelFlowGramsPerSecond * 0.2);
+
+            FuelFlowLitersPerSecond = fuelFlowSmoothed / FuelDensityGramsPerLiter;
             LPH = FuelFlowLitersPerSecond * 3600.0;
         } else {
             // Установка нулевого расхода при некорректных данных
@@ -326,7 +329,10 @@ void ObdWork() {
     }
 
     // Расчет расхода топлива на 100 км
-    if (odometr > 0) {
+    if (speed > 1) {
+        float speedKmh = static_cast<float>(speed);
+        LP100 = (LPH / speedKmh) * 100.0;
+    } else if (odometr > 0) {
         LP100 = (fuelSent / odometr) * 100.0;
     } else {
         LP100 = 0.0;
@@ -418,7 +424,7 @@ void getOBDParams() {
         }
 
         case INTAKE_TEMP: {
-            float tempIntakeTemp = myELM327.longTermFuelTrimBank_1();
+            float tempIntakeTemp = myELM327.intakeAirTemp();
 
             if (myELM327.nb_rx_state == ELM_SUCCESS) {
                 intakeTemp = tempIntakeTemp;
@@ -554,8 +560,8 @@ void showMessageByPressCount() {
     DisplayData messages[] = {
         {"Моментально:", "Л. в час:", String(LPH), "Л. на 100:", String(LP100)},
         {"За поездку:", "Проехал:", String(odometrCurrent), "Топливо:", String(fuelSent)},
-        {"Литры на 100:", "В общем:", String(LP100z), "Последние:", db[kk::fuelDB]},
-        {"За всё время:", "Проехал:", db[kk::odometrDB], "Топливо:", db[kk::odometrDB]},
+        {"Литры на 100:", "В общем:", String(LP100z), "Последние:", String(db[kk::last100lper100km])},
+        {"За всё время:", "Проехал:", db[kk::odometrDB], "Топливо:", db[kk::fuelDB]},
         {"Прочее", "Т. снаружи:", String(outsideTemp), "Т. впуск:", String(intakeTemp)}};
 
     int index = pressCount - 2;  // Сдвиг на 2, так как pressCount=1 — это displayTempVoltage
@@ -628,15 +634,20 @@ void updateDB() {
     float fdb100New = fdb100 + fuelAddLog;
 
     db[kk::fuel100DB] = fdb100New;
+
+    db.update();
 }
 
 void resetOdometerFuel() {
     // Подсчет нового значения расхода за последние 100км
     float fdb100 = db[kk::fuel100DB];
     float odb100 = db[kk::odometr100DB];
-    float flast100lper100km = (fdb100 / odb100) * 100;
-    db[kk::last100lper100km] = flast100lper100km;
+    if (odb100 > 0) {
+        float flast100lper100km = (fdb100 / odb100) * 100;
+        db[kk::last100lper100km] = flast100lper100km;
+    }
     // Сброс значений одометра и топлива на 0
-    db[kk::odometr100DB];
-    db[kk::fuel100DB];
+    db[kk::odometr100DB] = 0;
+    db[kk::fuel100DB] = 0;
+    db.update();
 }
